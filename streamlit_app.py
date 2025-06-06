@@ -1,4 +1,5 @@
-
+```python
+# streamlit_app.py
 import os
 import time
 import pandas as pd
@@ -9,20 +10,26 @@ from sklearn.calibration import CalibratedClassifierCV
 import finnhub
 import pandas_ta as ta
 
-# Config
+# --- Configuration (must be first Streamlit command) ---
+st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
+
+# Initialize Finnhub client
 FINNHUB_API_KEY = 'd0rnqspr01qumepfd80gd0rnqspr01qumepfd810'
 client = finnhub.Client(api_key=FINNHUB_API_KEY)
 
+# --- Caching Decorators ---
+@st.cache_data(show_spinner=False)
 def fetch_lse_tickers():
     symbols = client.stock_symbols('GB')
     return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
 
-def fetch_ohlcv(symbol, resolution='D', days=365*5):
+@st.cache_data(show_spinner=False)
+def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
     end = int(time.time())
     start = end - days * 24 * 3600
     r = client.stock_candles(symbol, resolution, start, end)
     if r.get('s') != 'ok':
-        return None
+        return pd.DataFrame()
     df = pd.DataFrame({
         'time': pd.to_datetime(r['t'], unit='s'),
         'open': r['o'],
@@ -33,7 +40,9 @@ def fetch_ohlcv(symbol, resolution='D', days=365*5):
     }).set_index('time')
     return df
 
-def compute_features(df):
+@st.cache_data(show_spinner=False)
+def compute_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
     df['ema10'] = ta.ema(df['close'], length=10)
     df['ema50'] = ta.ema(df['close'], length=50)
     df['rsi14'] = ta.rsi(df['close'], length=14)
@@ -41,50 +50,56 @@ def compute_features(df):
     df['mom5'] = df['close'].pct_change(5)
     return df.dropna()
 
-def compute_strength(X, model):
-    return (model.predict_proba(X)[:, 1] * 100).round(1)
-
-def compute_entry_stop(df, idx):
-    e = df['close'].iloc[idx]
-    return e, e - 1.5 * df['atr14'].iloc[idx]
-
-@st.cache(allow_output_mutation=True)
+@st.cache_resource(show_spinner=False)
 def load_model():
+    # Prebuilt calibrated random forest
     return CalibratedClassifierCV(RandomForestClassifier(n_estimators=50), cv=3)
 
-st.set_page_config(page_title='LSE Swing Scanner')
-st.title('LSE Swing Scanner')
-th = st.sidebar.slider('Strength (%)', 0.0, 100.0, 70.0)
-mt = st.sidebar.number_input('Max tickers', 1, 100, 20)
+# --- Streamlit UI ---
+st.title('LSE Swing Trade Scanner')
 
-if st.sidebar.button('Init'):
-    st.session_state['t'] = fetch_lse_tickers()
-    st.success(f"Loaded {len(st.session_state['t'])} tickers.")
+# Sidebar controls
+threshold = st.sidebar.slider('Strength threshold (%)', 0.0, 100.0, 70.0)
+max_tickers = st.sidebar.number_input('Max tickers to display', 1, 100, 20)
 
-if 't' not in st.session_state:
-    st.info('Please click Init to load tickers.')
+if st.sidebar.button('Initialize Tickers'):
+    tickers = fetch_lse_tickers()
+    st.session_state['tickers'] = tickers
+    st.success(f"Loaded {len(tickers)} tickers.")
+
+if 'tickers' not in st.session_state:
+    st.info("Click 'Initialize Tickers' to load tickers.")
     st.stop()
 
-def scan():
-    m = load_model()
-    res = []
-    for s in st.session_state['t'][:mt]:
-        df = fetch_ohlcv(s)
-        if df is None or len(df) < 60:
+# Main scan function
+def scan_tickers():
+    model = load_model()
+    results = []
+    tickers = st.session_state['tickers']
+    for symbol in tickers[:max_tickers]:
+        df = fetch_ohlcv(symbol)
+        if df.empty or len(df) < 60:
             continue
         df = compute_features(df)
         X = df[['ema10', 'ema50', 'rsi14', 'atr14', 'mom5']]
         y = (df['close'].shift(-10) >= df['close'] * 1.05).astype(int)
-        m.fit(X[:-30], y[:-30])
-        strg = compute_strength(X.iloc[[-1]], m)[0]
-        if strg >= th:
-            e, stop = compute_entry_stop(df, -1)
-            res.append({'Sym': s, 'Str': strg, 'Ent': round(e, 3), 'Stop': round(stop, 3)})
-    return pd.DataFrame(res)
+        model.fit(X[:-30], y[:-30])
+        strg = model.predict_proba(X.iloc[[-1]])[:,1][0] * 100
+        if strg >= threshold:
+            entry = df['close'].iloc[-1]
+            stop = entry - 1.5 * df['atr14'].iloc[-1]
+            results.append({
+                'Symbol': symbol,
+                'Strength (%)': round(strg,1),
+                'Entry Price': round(entry,3),
+                'Stop-Loss': round(stop,3)
+            })
+    return pd.DataFrame(results)
 
-if st.button('Run'):
-    df = scan()
-    if df.empty:
-        st.info('No signals found.')
+if st.button('Run Scanner'):
+    output_df = scan_tickers()
+    if output_df.empty:
+        st.info('No tickers met the threshold.')
     else:
-        st.dataframe(df)
+        st.dataframe(output_df.sort_values('Strength (%)', ascending=False))
+```
