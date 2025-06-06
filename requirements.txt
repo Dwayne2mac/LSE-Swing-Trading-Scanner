@@ -1,0 +1,7 @@
+streamlit
+pandas
+numpy
+scikit-learn
+finnhub-python
+pandas-ta
+setuptools
