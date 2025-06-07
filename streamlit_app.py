@@ -18,12 +18,15 @@ client = finnhub.Client(api_key=FINNHUB_API_KEY)
 # --- Caching functions ---
 @st.cache_data(show_spinner=False)
 def fetch_lse_tickers():
-    try:
-        symbols = client.stock_symbols('GB')
-        return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
-    except Exception as e:
-        st.error(f"Error fetching LSE tickers: {e}")
-        return []
+    # Attempt to retrieve LSE symbols with multiple exchange codes
+    for ex in ['XLON', 'LON', 'LSE']:
+        try:
+            symbols = client.stock_symbols(ex)
+            return [s['symbol'] for s in symbols if s.get('exchange') in ('XLON', ex)]
+        except Exception:
+            continue
+    st.error("Unable to fetch LSE tickers: check your Finnhub API plan or exchange code.")
+    return []
 
 # Next function
 def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
