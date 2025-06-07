@@ -1,50 +1,71 @@
 import os
 import time
+import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
-import finnhub
 import pandas_ta as ta
 
 # --- Configuration (must be first Streamlit command) ---
 st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 
-# Initialize Finnhub client with updated API key
+# Finnhub API Key
 FINNHUB_API_KEY = 'd12acb9r01qmhi3heaqgd12acb9r01qmhi3hear0'
-client = finnhub.Client(api_key=FINNHUB_API_KEY)
 
-# --- Caching functions ---
+# --- Data Fetching via HTTP ---
 @st.cache_data(show_spinner=False)
-def fetch_lse_tickers():
-    # Attempt to retrieve LSE symbols with multiple exchange codes
-    for ex in ['XLON', 'LON', 'LSE']:
-        try:
-            symbols = client.stock_symbols(ex)
-            return [s['symbol'] for s in symbols if s.get('exchange') in ('XLON', ex)]
-        except Exception:
-            continue
-    st.error("Unable to fetch LSE tickers: check your Finnhub API plan or exchange code.")
-    return []
+def fetch_lse_tickers() -> list[str]:
+    """
+    Retrieve LSE tickers via Finnhub HTTP API.
+    """
+    url = "https://finnhub.io/api/v1/stock/symbol"
+    params = {"exchange": "XLON", "token": FINNHUB_API_KEY}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        symbols = resp.json()
+        return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
+    except Exception as e:
+        st.error(f"Error fetching LSE tickers: {e}")
+        return []
 
 @st.cache_data(show_spinner=False)
 def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
+    """
+    Fetch OHLCV data via Finnhub HTTP API.
+    """
+    url = "https://finnhub.io/api/v1/stock/candle"
     end = int(time.time())
     start = end - days * 24 * 3600
-    r = client.stock_candles(symbol, resolution, start, end)
-    if r.get('s') != 'ok':
+    params = {
+        'symbol': symbol,
+        'resolution': resolution,
+        'from': start,
+        'to': end,
+        'token': FINNHUB_API_KEY
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get('s') != 'ok':
+            return pd.DataFrame()
+        df = pd.DataFrame({
+            'time': pd.to_datetime(data['t'], unit='s'),
+            'open': data['o'],
+            'high': data['h'],
+            'low': data['l'],
+            'close': data['c'],
+            'volume': data['v']
+        }).set_index('time')
+        return df
+    except Exception as e:
+        st.warning(f"Error fetching data for {symbol}: {e}")
         return pd.DataFrame()
-    df = pd.DataFrame({
-        'time': pd.to_datetime(r['t'], unit='s'),
-        'open': r['o'],
-        'high': r['h'],
-        'low': r['l'],
-        'close': r['c'],
-        'volume': r['v']
-    }).set_index('time')
-    return df
 
+# --- Feature Engineering ---
 @st.cache_data(show_spinner=False)
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -55,11 +76,12 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df['mom5'] = df['close'].pct_change(5)
     return df.dropna()
 
+# --- Model Loading ---
 @st.cache_resource(show_spinner=False)
 def load_model():
     return CalibratedClassifierCV(RandomForestClassifier(n_estimators=50), cv=3)
 
-# --- Streamlit UI ---
+# --- Streamlit App UI ---
 st.title('LSE Swing Trade Scanner')
 
 # Sidebar controls
@@ -75,8 +97,8 @@ if 'tickers' not in st.session_state:
     st.info("Click 'Initialize Tickers' to load tickers.")
     st.stop()
 
-# Main scan function
-def scan_tickers():
+# --- Core Scan Function ---
+def scan_tickers() -> pd.DataFrame:
     model = load_model()
     results = []
     tickers = st.session_state['tickers']
@@ -88,21 +110,21 @@ def scan_tickers():
         X = df[['ema10', 'ema50', 'rsi14', 'atr14', 'mom5']]
         y = (df['close'].shift(-10) >= df['close'] * 1.05).astype(int)
         model.fit(X[:-30], y[:-30])
-        strg = model.predict_proba(X.iloc[[-1]])[:,1][0] * 100
-        if strg >= threshold:
+        prob = model.predict_proba(X.iloc[[-1]])[:,1][0] * 100
+        if prob >= threshold:
             entry = df['close'].iloc[-1]
             stop = entry - 1.5 * df['atr14'].iloc[-1]
             results.append({
                 'Symbol': symbol,
-                'Strength (%)': round(strg,1),
-                'Entry Price': round(entry,3),
-                'Stop-Loss': round(stop,3)
+                'Strength (%)': round(prob, 1),
+                'Entry Price': round(entry, 3),
+                'Stop-Loss': round(stop, 3)
             })
     return pd.DataFrame(results)
 
 if st.button('Run Scanner'):
-    output_df = scan_tickers()
-    if output_df.empty:
+    df_out = scan_tickers()
+    if df_out.empty:
         st.info('No tickers met the threshold.')
     else:
-        st.dataframe(output_df.sort_values('Strength (%)', ascending=False))
+        st.dataframe(df_out.sort_values('Strength (%)', ascending=False))
