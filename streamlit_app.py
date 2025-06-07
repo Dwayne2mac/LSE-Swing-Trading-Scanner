@@ -23,7 +23,7 @@ def fetch_lse_tickers():
         return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
     except Exception as e:
         st.error(f"Error fetching LSE tickers: {e}")
-        return []():
+        return []:
     symbols = client.stock_symbols('GB')
     return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
 
