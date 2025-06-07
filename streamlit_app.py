@@ -1,4 +1,3 @@
-import os
 import time
 import requests
 import pandas as pd
@@ -11,31 +10,37 @@ import pandas_ta as ta
 # --- Configuration (must be first Streamlit command) ---
 st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 
-# Finnhub API Key
-FINNHUB_API_KEY = ''
+# Finnhub API Key for OHLCV (only for price data)
+FINNHUB_API_KEY = 'd12acb9r01qmhi3heaqgd12acb9r01qmhi3hear0'
 
-# --- Data Fetching via HTTP ---
+# --- Fetch LSE Tickers via Wikipedia Scraping ---
 @st.cache_data(show_spinner=False)
 def fetch_lse_tickers() -> list[str]:
     """
-    Retrieve LSE tickers via Finnhub HTTP API.
+    Scrape FTSE 100 and FTSE 250 constituents from Wikipedia.
     """
-    url = "https://finnhub.io/api/v1/stock/symbol"
-    params = {"exchange": "XLON", "token": FINNHUB_API_KEY}
-    try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        symbols = resp.json()
-        return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
-    except Exception as e:
-        st.error(f"Error fetching LSE tickers: {e}")
-        return []
+    urls = {
+        "FTSE 100": "https://en.wikipedia.org/wiki/FTSE_100",
+        "FTSE 250": "https://en.wikipedia.org/wiki/FTSE_250"
+    }
+    tickers = []
+    for name, url in urls.items():
+        try:
+            tables = pd.read_html(url, flavor="bs4")
+            for df in tables:
+                for col in df.columns:
+                    if str(col).lower() in ("epic", "ticker", "code"):
+                        tickers += df[col].astype(str).str.upper().tolist()
+                        raise StopIteration
+        except StopIteration:
+            continue
+        except Exception as e:
+            st.warning(f"Could not scrape {name}: {e}")
+    return sorted(set(tickers))
 
+# --- Fetch OHLCV Data via Finnhub HTTP API ---
 @st.cache_data(show_spinner=False)
 def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
-    """
-    Fetch OHLCV data via Finnhub HTTP API.
-    """
     url = "https://finnhub.io/api/v1/stock/candle"
     end = int(time.time())
     start = end - days * 24 * 3600
@@ -76,7 +81,7 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df['mom5'] = df['close'].pct_change(5)
     return df.dropna()
 
-# --- Model Loading ---
+# --- Load Model ---
 @st.cache_resource(show_spinner=False)
 def load_model():
     return CalibratedClassifierCV(RandomForestClassifier(n_estimators=50), cv=3)
@@ -91,7 +96,7 @@ max_tickers = st.sidebar.number_input('Max tickers to display', 1, 100, 20)
 if st.sidebar.button('Initialize Tickers'):
     tickers = fetch_lse_tickers()
     st.session_state['tickers'] = tickers
-    st.success(f"Loaded {len(tickers)} tickers.")
+    st.success(f"Loaded {len(tickers)} LSE tickers from Wikipedia")
 
 if 'tickers' not in st.session_state:
     st.info("Click 'Initialize Tickers' to load tickers.")
@@ -101,19 +106,18 @@ if 'tickers' not in st.session_state:
 def scan_tickers() -> pd.DataFrame:
     model = load_model()
     results = []
-    tickers = st.session_state['tickers']
-    for symbol in tickers[:max_tickers]:
+    for symbol in st.session_state['tickers'][:max_tickers]:
         df = fetch_ohlcv(symbol)
         if df.empty or len(df) < 60:
             continue
-        df = compute_features(df)
-        X = df[['ema10', 'ema50', 'rsi14', 'atr14', 'mom5']]
-        y = (df['close'].shift(-10) >= df['close'] * 1.05).astype(int)
+        df_feat = compute_features(df)
+        X = df_feat[['ema10', 'ema50', 'rsi14', 'atr14', 'mom5']]
+        y = (df_feat['close'].shift(-10) >= df_feat['close'] * 1.05).astype(int)
         model.fit(X[:-30], y[:-30])
         prob = model.predict_proba(X.iloc[[-1]])[:,1][0] * 100
         if prob >= threshold:
-            entry = df['close'].iloc[-1]
-            stop = entry - 1.5 * df['atr14'].iloc[-1]
+            entry = df_feat['close'].iloc[-1]
+            stop = entry - 1.5 * df_feat['atr14'].iloc[-1]
             results.append({
                 'Symbol': symbol,
                 'Strength (%)': round(prob, 1),
