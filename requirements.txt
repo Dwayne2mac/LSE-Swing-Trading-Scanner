@@ -1,8 +1,7 @@
-streamlit
-pandas
+streamlit>=1.45.0
+pandas>=2.0.0
 numpy>=1.26.0
 scikit-learn
-finnhub-python
-pandas-ta
 html5lib
 lxml
+yfinance
