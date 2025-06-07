@@ -1,4 +1,5 @@
 import time
+import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -6,10 +7,10 @@ import yfinance as yf
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 
-# --- Streamlit config ---
+# --- Configuration (must be first Streamlit command) ---
 st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 
-# --- Ticker Fetch (Wikipedia scraping as before) ---
+# --- Fetch LSE Tickers via Wikipedia ---
 @st.cache_data(show_spinner=False)
 def fetch_lse_tickers() -> list[str]:
     urls = {
@@ -31,11 +32,14 @@ def fetch_lse_tickers() -> list[str]:
             st.warning(f"Could not scrape {name}: {e}")
     return sorted(set(tickers))
 
-# --- OHLCV Fetch via yfinance ---
+# --- Fetch OHLCV via yfinance (append .L for LSE) ---
 @st.cache_data(show_spinner=False)
 def fetch_ohlcv(symbol: str, period: str = '5y', interval: str = '1d') -> pd.DataFrame:
+    yf_symbol = f"{symbol}.L"
     try:
-        df = yf.Ticker(symbol).history(period=period, interval=interval)
+        df = yf.Ticker(yf_symbol).history(period=period, interval=interval)
+        if df.empty:
+            return pd.DataFrame()
         df = df.rename(columns={
             'Open': 'open', 'High': 'high',
             'Low': 'low', 'Close': 'close',
@@ -50,6 +54,7 @@ def fetch_ohlcv(symbol: str, period: str = '5y', interval: str = '1d') -> pd.Dat
 @st.cache_data(show_spinner=False)
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    # EMA
     df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
     # RSI (14)
@@ -70,50 +75,56 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df['mom5'] = df['close'].pct_change(5)
     return df.dropna()
 
-# --- Model Loading ---
+# --- Load Model ---
 @st.cache_resource(show_spinner=False)
 def load_model():
     return CalibratedClassifierCV(RandomForestClassifier(n_estimators=50), cv=3)
 
-# --- Streamlit UI ---
+# --- Streamlit App ---
 st.title('LSE Swing Trade Scanner')
+
+# Sidebar controls
 threshold = st.sidebar.slider('Strength threshold (%)', 0.0, 100.0, 70.0)
 max_tickers = st.sidebar.number_input('Max tickers to display', 1, 100, 20)
 
 if st.sidebar.button('Initialize Tickers'):
     st.session_state['tickers'] = fetch_lse_tickers()
-    st.success(f"Loaded {len(st.session_state['tickers'])} tickers.")
+    st.success(f"Loaded {len(st.session_state['tickers'])} LSE tickers from Wikipedia")
 
 if 'tickers' not in st.session_state:
     st.info("Click 'Initialize Tickers' to load tickers.")
     st.stop()
 
+# --- Core Scan Function ---
 def scan_tickers() -> pd.DataFrame:
     model = load_model()
-    out = []
-    for sym in st.session_state['tickers'][:max_tickers]:
-        df = fetch_ohlcv(sym)
+    results = []
+    for symbol in st.session_state['tickers'][:max_tickers]:
+        df = fetch_ohlcv(symbol)
         if df.empty or len(df) < 60:
             continue
         feats = compute_features(df)
         X = feats[['ema10', 'ema50', 'rsi14', 'atr14', 'mom5']]
         y = (feats['close'].shift(-10) >= feats['close'] * 1.05).astype(int)
+        # Ensure sufficient variability and length
+        if len(y[:-30]) < 50 or y[:-30].nunique() < 2:
+            continue
         model.fit(X[:-30], y[:-30])
         prob = model.predict_proba(X.iloc[[-1]])[:,1][0] * 100
         if prob >= threshold:
             entry = feats['close'].iloc[-1]
             stop = entry - 1.5 * feats['atr14'].iloc[-1]
-            out.append({
-                'Symbol': sym,
+            results.append({
+                'Symbol': symbol,
                 'Strength (%)': round(prob,1),
                 'Entry Price': round(entry,3),
                 'Stop-Loss': round(stop,3)
             })
-    return pd.DataFrame(out)
+    return pd.DataFrame(results)
 
 if st.button('Run Scanner'):
     df_res = scan_tickers()
     if df_res.empty:
-        st.info("No tickers met the threshold.")
+        st.info('No tickers met the threshold.')
     else:
         st.dataframe(df_res.sort_values('Strength (%)', ascending=False))
