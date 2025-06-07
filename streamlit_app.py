@@ -12,7 +12,7 @@ import pandas_ta as ta
 st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 
 # Finnhub API Key
-FINNHUB_API_KEY = 'd12acb9r01qmhi3heaqgd12acb9r01qmhi3hear0'
+FINNHUB_API_KEY = ''
 
 # --- Data Fetching via HTTP ---
 @st.cache_data(show_spinner=False)
