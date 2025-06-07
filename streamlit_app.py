@@ -1,4 +1,3 @@
-python
 # streamlit_app.py
 import os
 import time
@@ -17,7 +16,7 @@ st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 FINNHUB_API_KEY = 'd0rnqspr01qumepfd80gd0rnqspr01qumepfd810'
 client = finnhub.Client(api_key=FINNHUB_API_KEY)
 
-# --- Caching Decorators ---
+# --- Caching functions ---
 @st.cache_data(show_spinner=False)
 def fetch_lse_tickers():
     symbols = client.stock_symbols('GB')
@@ -52,7 +51,6 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_resource(show_spinner=False)
 def load_model():
-    # Prebuilt calibrated random forest
     return CalibratedClassifierCV(RandomForestClassifier(n_estimators=50), cv=3)
 
 # --- Streamlit UI ---
@@ -102,4 +100,3 @@ if st.button('Run Scanner'):
         st.info('No tickers met the threshold.')
     else:
         st.dataframe(output_df.sort_values('Strength (%)', ascending=False))
-
