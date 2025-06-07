@@ -23,11 +23,9 @@ def fetch_lse_tickers():
         return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
     except Exception as e:
         st.error(f"Error fetching LSE tickers: {e}")
-        return []:
-    symbols = client.stock_symbols('GB')
-    return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
+        return []
 
-@st.cache_data(show_spinner=False)
+# Next function
 def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
     end = int(time.time())
     start = end - days * 24 * 3600
