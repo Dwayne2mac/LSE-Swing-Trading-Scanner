@@ -11,8 +11,8 @@ import pandas_ta as ta
 # --- Configuration (must be first Streamlit command) ---
 st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 
-# Initialize Finnhub client
-FINNHUB_API_KEY = 'd0rnqspr01qumepfd80gd0rnqspr01qumepfd810'
+# Initialize Finnhub client with updated API key
+FINNHUB_API_KEY = 'd12acb9r01qmhi3heaqgd12acb9r01qmhi3hear0'
 client = finnhub.Client(api_key=FINNHUB_API_KEY)
 
 # --- Caching functions ---
@@ -28,7 +28,7 @@ def fetch_lse_tickers():
     st.error("Unable to fetch LSE tickers: check your Finnhub API plan or exchange code.")
     return []
 
-# Next function
+@st.cache_data(show_spinner=False)
 def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
     end = int(time.time())
     start = end - days * 24 * 3600
