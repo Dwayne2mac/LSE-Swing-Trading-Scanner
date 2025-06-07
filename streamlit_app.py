@@ -1,4 +1,3 @@
-# streamlit_app.py
 import os
 import time
 import pandas as pd
@@ -100,3 +99,4 @@ if st.button('Run Scanner'):
         st.info('No tickers met the threshold.')
     else:
         st.dataframe(output_df.sort_values('Strength (%)', ascending=False))
+
