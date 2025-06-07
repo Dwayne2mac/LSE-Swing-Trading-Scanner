@@ -18,6 +18,12 @@ client = finnhub.Client(api_key=FINNHUB_API_KEY)
 # --- Caching functions ---
 @st.cache_data(show_spinner=False)
 def fetch_lse_tickers():
+    try:
+        symbols = client.stock_symbols('GB')
+        return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
+    except Exception as e:
+        st.error(f"Error fetching LSE tickers: {e}")
+        return []():
     symbols = client.stock_symbols('GB')
     return [s['symbol'] for s in symbols if s.get('exchange') == 'XLON']
 
@@ -99,4 +105,3 @@ if st.button('Run Scanner'):
         st.info('No tickers met the threshold.')
     else:
         st.dataframe(output_df.sort_values('Strength (%)', ascending=False))
-
