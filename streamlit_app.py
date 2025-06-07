@@ -1,18 +1,15 @@
 import time
-import requests
 import pandas as pd
 import numpy as np
 import streamlit as st
+import yfinance as yf
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.calibration import CalibratedClassifierCV
 
-# --- Configuration (must be first Streamlit command) ---
+# --- Streamlit config ---
 st.set_page_config(page_title='LSE Swing Scanner', layout='wide')
 
-# Finnhub API Key for OHLCV data
-FINNHUB_API_KEY = 'd12acb9r01qmhi3heaqgd12acb9r01qmhi3hear0'
-
-# --- Fetch LSE Tickers via Wikipedia ---
+# --- Ticker Fetch (Wikipedia scraping as before) ---
 @st.cache_data(show_spinner=False)
 def fetch_lse_tickers() -> list[str]:
     urls = {
@@ -34,36 +31,28 @@ def fetch_lse_tickers() -> list[str]:
             st.warning(f"Could not scrape {name}: {e}")
     return sorted(set(tickers))
 
-# --- Fetch OHLCV via Finnhub HTTP API ---
+# --- OHLCV Fetch via yfinance ---
 @st.cache_data(show_spinner=False)
-def fetch_ohlcv(symbol: str, resolution: str = 'D', days: int = 365*5) -> pd.DataFrame:
-    url = 'https://finnhub.io/api/v1/stock/candle'
-    end = int(time.time())
-    start = end - days * 24 * 3600
-    params = {'symbol': symbol, 'resolution': resolution, 'from': start, 'to': end, 'token': FINNHUB_API_KEY}
+def fetch_ohlcv(symbol: str, period: str = '5y', interval: str = '1d') -> pd.DataFrame:
     try:
-        resp = requests.get(url, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get('s') != 'ok':
-            return pd.DataFrame()
-        df = pd.DataFrame({
-            'time': pd.to_datetime(data['t'], unit='s'),
-            'open': data['o'], 'high': data['h'], 'low': data['l'], 'close': data['c'], 'volume': data['v']
-        }).set_index('time')
-        return df
+        df = yf.Ticker(symbol).history(period=period, interval=interval)
+        df = df.rename(columns={
+            'Open': 'open', 'High': 'high',
+            'Low': 'low', 'Close': 'close',
+            'Volume': 'volume'
+        })
+        return df[['open', 'high', 'low', 'close', 'volume']].dropna()
     except Exception as e:
-        st.warning(f"Error fetching data for {symbol}: {e}")
+        st.warning(f"Yahoo Finance fetch error for {symbol}: {e}")
         return pd.DataFrame()
 
-# --- Feature Engineering without pandas_ta ---
+# --- Feature Engineering ---
 @st.cache_data(show_spinner=False)
 def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # EMA
     df['ema10'] = df['close'].ewm(span=10, adjust=False).mean()
     df['ema50'] = df['close'].ewm(span=50, adjust=False).mean()
-    # RSI
+    # RSI (14)
     delta = df['close'].diff()
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
@@ -71,43 +60,39 @@ def compute_features(df: pd.DataFrame) -> pd.DataFrame:
     avg_loss = loss.rolling(window=14).mean()
     rs = avg_gain / avg_loss
     df['rsi14'] = 100 - (100 / (1 + rs))
-    # ATR
+    # ATR (14)
     high_low = df['high'] - df['low']
     high_prev = (df['high'] - df['close'].shift()).abs()
     low_prev = (df['low'] - df['close'].shift()).abs()
     tr = pd.concat([high_low, high_prev, low_prev], axis=1).max(axis=1)
     df['atr14'] = tr.rolling(window=14).mean()
-    # Momentum
+    # Momentum (5)
     df['mom5'] = df['close'].pct_change(5)
     return df.dropna()
 
-# --- Load Model ---
+# --- Model Loading ---
 @st.cache_resource(show_spinner=False)
 def load_model():
     return CalibratedClassifierCV(RandomForestClassifier(n_estimators=50), cv=3)
 
-# --- Streamlit App ---
+# --- Streamlit UI ---
 st.title('LSE Swing Trade Scanner')
-
-# Sidebar
 threshold = st.sidebar.slider('Strength threshold (%)', 0.0, 100.0, 70.0)
 max_tickers = st.sidebar.number_input('Max tickers to display', 1, 100, 20)
 
 if st.sidebar.button('Initialize Tickers'):
-    tickers = fetch_lse_tickers()
-    st.session_state['tickers'] = tickers
-    st.success(f"Loaded {len(tickers)} LSE tickers from Wikipedia")
+    st.session_state['tickers'] = fetch_lse_tickers()
+    st.success(f"Loaded {len(st.session_state['tickers'])} tickers.")
 
 if 'tickers' not in st.session_state:
     st.info("Click 'Initialize Tickers' to load tickers.")
     st.stop()
 
-# --- Scanner ---
 def scan_tickers() -> pd.DataFrame:
     model = load_model()
-    results = []
-    for symbol in st.session_state['tickers'][:max_tickers]:
-        df = fetch_ohlcv(symbol)
+    out = []
+    for sym in st.session_state['tickers'][:max_tickers]:
+        df = fetch_ohlcv(sym)
         if df.empty or len(df) < 60:
             continue
         feats = compute_features(df)
@@ -118,17 +103,17 @@ def scan_tickers() -> pd.DataFrame:
         if prob >= threshold:
             entry = feats['close'].iloc[-1]
             stop = entry - 1.5 * feats['atr14'].iloc[-1]
-            results.append({
-                'Symbol': symbol,
+            out.append({
+                'Symbol': sym,
                 'Strength (%)': round(prob,1),
                 'Entry Price': round(entry,3),
                 'Stop-Loss': round(stop,3)
             })
-    return pd.DataFrame(results)
+    return pd.DataFrame(out)
 
 if st.button('Run Scanner'):
-    df_out = scan_tickers()
-    if df_out.empty:
-        st.info('No tickers met the threshold.')
+    df_res = scan_tickers()
+    if df_res.empty:
+        st.info("No tickers met the threshold.")
     else:
-        st.dataframe(df_out.sort_values('Strength (%)', ascending=False))
+        st.dataframe(df_res.sort_values('Strength (%)', ascending=False))
